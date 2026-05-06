@@ -1,0 +1,21 @@
+# 핵심
+# ncnn — Windows wheel은 https://github.com/Tencent/ncnn/releases 에서 직접 다운로드
+# pip install ncnn-*.whl
+ncnn
+opencv-python>=4.8.0
+numpy>=1.24.0
+PyQt5>=5.15.0
+
+# 캡처
+dxcam
+mss>=9.0.0
+
+# Windows API
+pywin32
+
+# 로그 분석 (선택)
+pandas
+matplotlib
+
+# 패키징 (개발 환경)
+pyinstaller>=6.0.0

@@ -1,0 +1,29 @@
+# 실 모델 파일 제외 (분석 대상 추출 파일)
+models/*.bin
+models/*.param
+
+# 런타임 생성 파일
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 빌드 결과물
+dist/
+build/
+*.spec.bak
+
+# 가상환경
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
