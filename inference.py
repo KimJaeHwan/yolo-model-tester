@@ -68,13 +68,26 @@ class InferenceModule:
         self.load_model(param_path, bin_path)
 
     def infer(self, frame: np.ndarray) -> list[Detection]:
+        if frame is None or frame.size == 0:
+            return []
+        h, w = frame.shape[:2]
+        if w == 0 or h == 0:
+            return []
+
+        s = self._input_size
+        # 프레임이 입력 크기보다 크면 타일 분할 추론
+        # (큰 영역에서 letterbox 축소로 인한 객체 손실 방지)
+        if w > s or h > s:
+            return self._infer_tiled(frame)
+        return self._infer_single(frame, 0, 0)
+
+    def _infer_single(self, frame: np.ndarray, x_offset: int, y_offset: int) -> list[Detection]:
+        """단일 추론 — 결과 좌표에 (x_offset, y_offset)을 더해 반환."""
         with self._lock:
             if self._net is None:
                 return []
             net = self._net
 
-        if frame is None or frame.size == 0:
-            return []
         h, w = frame.shape[:2]
         if w == 0 or h == 0:
             return []
@@ -91,12 +104,42 @@ class InferenceModule:
             ex.input(self._in_layer, mat_in)
 
             if self._model_type == "yolov8":
-                return self._postprocess_yolov8(ex, w, h, scale, pad_left, pad_top)
+                dets = self._postprocess_yolov8(ex, w, h, scale, pad_left, pad_top)
             else:
-                return self._postprocess_yolov5(ex, w, h, scale, pad_left, pad_top)
+                dets = self._postprocess_yolov5(ex, w, h, scale, pad_left, pad_top)
         except Exception as e:
-            print(f"[Inference] 오류 (프레임 스킵): {e}")
+            print(f"[Inference] 오류 (스킵): {e}")
             return []
+
+        if x_offset != 0 or y_offset != 0:
+            for d in dets:
+                d.x1 += x_offset
+                d.y1 += y_offset
+                d.x2 += x_offset
+                d.y2 += y_offset
+        return dets
+
+    def _infer_tiled(self, frame: np.ndarray) -> list[Detection]:
+        """프레임을 input_size 타일로 분할 추론 후 NMS 병합."""
+        h, w = frame.shape[:2]
+        s = self._input_size
+        overlap = s // 5  # 약 20% 중첩
+
+        xs = _tile_starts(w, s, overlap)
+        ys = _tile_starts(h, s, overlap)
+
+        all_dets: list[Detection] = []
+        for ty in ys:
+            for tx in xs:
+                tx2 = min(tx + s, w)
+                ty2 = min(ty + s, h)
+                tile = frame[ty:ty2, tx:tx2]
+                if tile.shape[0] == 0 or tile.shape[1] == 0:
+                    continue
+                tile_dets = self._infer_single(tile, tx, ty)
+                all_dets.extend(tile_dets)
+
+        return _nms_detections(all_dets, self.config.nms_threshold)
 
     def _postprocess_yolov5(
         self, ex, orig_w, orig_h, scale, pad_left, pad_top
@@ -229,6 +272,39 @@ class InferenceModule:
 
 
 # ── 헬퍼 함수 ──────────────────────────────────────────────────────────────────
+
+def _tile_starts(length: int, tile_size: int, overlap: int) -> list[int]:
+    """[0, length) 구간을 tile_size 크기 타일로 덮을 시작 좌표 리스트."""
+    if length <= tile_size:
+        return [0]
+    stride = max(1, tile_size - overlap)
+    starts = list(range(0, length - tile_size + 1, stride))
+    if not starts:
+        starts = [0]
+    if starts[-1] != length - tile_size:
+        starts.append(length - tile_size)
+    return starts
+
+
+def _nms_detections(detections: list[Detection], iou_threshold: float) -> list[Detection]:
+    """타일 간 중복 탐지 제거 (클래스별 NMS)."""
+    if not detections:
+        return []
+    by_class: dict[int, list[Detection]] = {}
+    for d in detections:
+        by_class.setdefault(d.class_id, []).append(d)
+
+    result: list[Detection] = []
+    for cid, dets in by_class.items():
+        boxes = [[d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1] for d in dets]
+        scores = [d.confidence for d in dets]
+        if not boxes:
+            continue
+        indices = cv2.dnn.NMSBoxes(boxes, scores, 0.0, iou_threshold)
+        for idx in (indices.flatten() if hasattr(indices, "flatten") else indices):
+            result.append(dets[idx])
+    return result
+
 
 def _letterbox(img: np.ndarray, target: int) -> tuple[np.ndarray, int, int, float]:
     h, w = img.shape[:2]
